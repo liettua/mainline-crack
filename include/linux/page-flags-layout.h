@@ -28,7 +28,7 @@
 
 #ifdef CONFIG_LRU_GEN
 /* LRU_GEN_WIDTH is generated from order_base_2(CONFIG_NR_LRU_GENS + 1). */
-#define LRU_REFS_WIDTH		0
+#define LRU_REFS_WIDTH		(CONFIG_TIERS_PER_GEN - 2)
 #else
 #define LRU_GEN_WIDTH		0
 #define LRU_REFS_WIDTH		0

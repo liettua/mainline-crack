@@ -315,6 +315,9 @@ enum {
 	LRU_GEN_FILE,
 };
 
+#define MIN_LRU_BATCH		BITS_PER_LONG
+#define MAX_LRU_BATCH		(MIN_LRU_BATCH * 128)
+
 /*
  * Evictable pages are divided into multiple generations. The youngest and the
  * oldest generation numbers, max_seq and min_seq, are monotonically increasing.
@@ -340,6 +343,32 @@ enum {
 #define MAX_NR_GENS		((unsigned int)CONFIG_NR_LRU_GENS)
 
 /*
+ * Each generation is divided into multiple tiers. Tiers represent different
+ * ranges of numbers of accesses through file descriptors. A page accessed N
+ * times through file descriptors is in tier order_base_2(N). A page in the
+ * first tier (N=0,1) is marked by PG_referenced unless it was faulted in
+ * though page tables or read ahead. A page in any other tier (N>1) is marked
+ * by PG_referenced and PG_workingset. Additional bits in folio->flags are
+ * required to support more than two tiers.
+ *
+ * In contrast to moving across generations which requires the LRU lock, moving
+ * across tiers only requires operations on folio->flags and therefore has a
+ * negligible cost in the buffered access path. In the eviction path,
+ * comparisons of refaulted/(evicted+protected) from the first tier and the
+ * rest infer whether pages accessed multiple times through file descriptors
+ * are statistically hot and thus worth protecting.
+ */
+#define MAX_NR_TIERS		((unsigned int)CONFIG_TIERS_PER_GEN)
+#define LRU_REFS_FLAGS		(BIT(PG_referenced) | BIT(PG_workingset))
+
+/* whether to keep historical stats from evicted generations */
+#ifdef CONFIG_LRU_GEN_STATS
+#define NR_HIST_GENS		((unsigned int)CONFIG_NR_LRU_GENS)
+#else
+#define NR_HIST_GENS		1U
+#endif
+
+/*
  * The youngest generation number is stored in max_seq for both anon and file
  * types as they are aged on an equal footing. The oldest generation numbers are
  * stored in min_seq[] separately for anon and file types as clean file pages
@@ -358,6 +387,15 @@ struct lru_gen_struct {
 	struct list_head lists[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
 	/* the sizes of the above lists */
 	unsigned long nr_pages[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
+	/* the exponential moving average of refaulted */
+	unsigned long avg_refaulted[ANON_AND_FILE][MAX_NR_TIERS];
+	/* the exponential moving average of evicted+protected */
+	unsigned long avg_total[ANON_AND_FILE][MAX_NR_TIERS];
+	/* the first tier doesn't need protection, hence the minus one */
+	unsigned long protected[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS - 1];
+	/* can be modified without holding the LRU lock */
+	atomic_long_t evicted[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS];
+	atomic_long_t refaulted[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS];
 };
 
 void lru_gen_init_lruvec(struct lruvec *lruvec);
